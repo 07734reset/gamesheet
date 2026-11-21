@@ -280,7 +280,6 @@ function viewPre(g) {
       <label>Time <input type="time" data-bind="time" value="${esc(g.time)}"></label>
     </div>
     <label>Venue <input data-bind="venue" value="${esc(g.venue)}"></label>
-    <label>Attendance <input data-bind="attendance" inputmode="numeric" value="${esc(g.attendance)}" placeholder="optional"></label>
   </section>
   <section class="card"><button class="btn primary" data-tab="rosters">Next: rosters →</button></section>`;
 }
@@ -293,11 +292,9 @@ function viewRosters(g) {
     <section class="card">
       <h2>${side === 'home' ? 'Home' : 'Away'}: ${esc(t.name || '(name not set)')}</h2>
       <div class="btnrow">
-        <label class="btn">📷 Import from photo<input type="file" accept="image/*" hidden data-action="photo" data-side="${side}"></label>
         <button class="btn" data-action="add-player" data-side="${side}">+ Add player</button>
         ${t.players.length ? `<button class="btn danger" data-action="clear-roster" data-side="${side}">Clear</button>` : ''}
       </div>
-      <div class="ocr-status" id="ocr-${side}"></div>
       ${t.players.length ? `
       <table class="roster">
         <thead><tr><th>No.</th><th>Name</th><th title="Netminder">NM</th><th></th></tr></thead>
@@ -310,7 +307,7 @@ function viewRosters(g) {
           </tr>`).join('')}
         </tbody>
       </table>
-      <p class="muted small">${t.players.length} players${dupWarning(t)}. Tick NM for netminders.</p>` : '<p class="muted">No players yet. Import a photo of the team list or add players by hand.</p>'}
+      <p class="muted small">${t.players.length} players${dupWarning(t)}. Tick NM for netminders.</p>` : '<p class="muted">No players yet. Fill them from the Gameday PDF on the Pre-game tab, or add players by hand.</p>'}
     </section>`;
   }).join('');
 }
@@ -450,7 +447,7 @@ function autoNetminders(g) {
 }
 function nmOptions(g, side, selected, blank) {
   const list = sortedPlayers(g, side).filter(p => p.nm || p.id === selected);
-  return `<option value="">${esc(blank)}</option>` + list.map(p => `<option value="${p.id}" ${p.id === selected ? 'selected' : ''}>${esc(p.no || '?')} · ${esc(p.name)}</option>`).join('');
+  return `<option value="">${list.length ? '—' : 'Tick NM on Rosters'}</option>` + list.map(p => `<option value="${p.id}" ${p.id === selected ? 'selected' : ''}>${esc(p.no || '?')} · ${esc(p.name)}</option>`).join('');
 }
 function viewExtras(g) {
   const L = periodLen(g);
@@ -482,12 +479,10 @@ function viewExtras(g) {
     <h2>Time outs</h2>
     ${['home', 'away'].map(side => `
       <div class="to">
-        <strong>${esc(g[side].name || side)}</strong>: ${g.timeouts[side].map((t, i) => `<span class="chip">${fmt(t.t)} <button class="link" data-action="del-to" data-side="${side}" data-i="${i}">✕</button></span>`).join(' ') || '<span class="muted">none</span>'}
-        <div class="row3">
-          <select id="to-${side}-p">${PERIODS.map(p => `<option>${p}</option>`).join('')}</select>
-          <input id="to-${side}-c" inputmode="numeric" placeholder="clock">
-          <button class="btn small" data-action="add-to" data-side="${side}">Add</button>
-        </div>
+        <span class="grow">${esc(g[side].name || (side === 'home' ? 'Home' : 'Away'))}</span>
+        <button class="btn small" data-action="del-to" data-side="${side}" ${g.timeouts[side].length ? '' : 'disabled'} aria-label="One fewer">−</button>
+        <b class="count">${g.timeouts[side].length}</b>
+        <button class="btn small" data-action="add-to" data-side="${side}" aria-label="One more">+</button>
       </div>`).join('')}
   </section>`;
 }
@@ -567,7 +562,7 @@ function sheetHTML(g) {
     };
     return nm.rows.map(r => row(r.playerId ? (player(g, side, r.playerId)?.name || '') : '', r)).join('') + row('Empty Net', nm.empty);
   };
-  const toCalled = ['home', 'away'].flatMap(side => g.timeouts[side].map(t => `${side === 'home' ? 'H' : 'A'} ${fmt(t.t)}`)).join(', ');
+  const toCalled = '';
   return `
   <div class="sheet">
     <div class="left">
@@ -683,12 +678,8 @@ document.addEventListener('click', e => {
       const L = periodLen(g), otPlayed = g.goals.some(x => x.period === 'OT') || g.penalties.some(x => x.period === 'OT');
       g.netminders[side].rows[+t.dataset.row].toi = fmt(3 * L + (otPlayed ? otLen(g) : 0)); save(); break;
     }
-    case 'add-to': {
-      const p = $(`#to-${side}-p`).value, c = $(`#to-${side}-c`).value;
-      const err = clockError(g, p, c); if (err) { toast(err); return; }
-      g.timeouts[side].push({ period: p, clock: c, t: elapsed(g, p, parseClock(c)) }); save(); break;
-    }
-    case 'del-to': g.timeouts[side].splice(+t.dataset.i, 1); save(); break;
+    case 'add-to': g.timeouts[side].push({}); save(); break;
+    case 'del-to': g.timeouts[side].pop(); save(); break;
     case 'print': doPrint(g); return;
     default: return;
   }
@@ -729,7 +720,6 @@ document.addEventListener('input', e => {
 document.addEventListener('change', e => {
   const el = e.target;
   if (el.dataset.action === 'gameday' && el.files && el.files[0]) { importGameday(el.files[0], !!el.dataset.new); el.value = ''; }
-  else if (el.dataset.action === 'photo' && el.files && el.files[0]) { importPhoto(el.dataset.side, el.files[0]); el.value = ''; }
   else if (el.dataset.player && el.dataset.field === 'no') render(); // re-sort/flag duplicates
 });
 window.addEventListener('resize', () => tab === 'sheet' && fitSheet());
@@ -778,129 +768,9 @@ function doPrint(g) {
   setTimeout(() => { document.title = old; }, 1000);
 }
 
-/* ============================================================
-   Team list photo → roster (on-device text recognition)
-   ============================================================ */
-const OCR_DIR = 'vendor/tesseract/';  // tesseract.js 5.1.1 (Apache-2.0), served with the app so it works offline
+/* ---------- script loader ---------- */
 function loadScript(src) {
   return new Promise((res, rej) => { const s = document.createElement('script'); s.src = src; s.onload = res; s.onerror = () => rej(new Error('load')); document.head.appendChild(s); });
-}
-/**
- * Clean up a phone photo of a printed team list for text recognition:
- * greyscale → black/white (Otsu threshold) → remove the table's ruled lines,
- * which otherwise swallow the shirt numbers sitting in narrow cells.
- */
-async function prepImage(file) {
-  const bmp = await createImageBitmap(file);
-  const scale = Math.min(1, 1800 / Math.max(bmp.width, bmp.height));
-  const W = Math.round(bmp.width * scale), H = Math.round(bmp.height * scale);
-  const c = document.createElement('canvas'); c.width = W; c.height = H;
-  const ctx = c.getContext('2d', { willReadFrequently: true });
-  ctx.drawImage(bmp, 0, 0, W, H);
-  const img = ctx.getImageData(0, 0, W, H), px = img.data, n = W * H;
-  const grey = new Uint8Array(n), hist = new Array(256).fill(0);
-  for (let i = 0; i < n; i++) { const v = (px[i * 4] * 299 + px[i * 4 + 1] * 587 + px[i * 4 + 2] * 114) / 1000 | 0; grey[i] = v; hist[v]++; }
-  // Otsu threshold
-  let sumAll = 0; for (let t = 0; t < 256; t++) sumAll += t * hist[t];
-  let wB = 0, sumB = 0, best = 0, thr = 128;
-  for (let t = 0; t < 256; t++) {
-    wB += hist[t]; if (!wB) continue; const wF = n - wB; if (!wF) break;
-    sumB += t * hist[t]; const d = sumB / wB - (sumAll - sumB) / wF, v = wB * wF * d * d;
-    if (v > best) { best = v; thr = t; }
-  }
-  const ink = new Uint8Array(n); for (let i = 0; i < n; i++) ink[i] = grey[i] <= thr ? 1 : 0;
-  const kill = new Uint8Array(n);
-  const minH = W / 12 | 0, minV = H / 25 | 0;
-  for (let y = 0; y < H; y++) { let s = -1; for (let x = 0; x <= W; x++) { const on = x < W && ink[y * W + x]; if (on && s < 0) s = x; else if (!on && s >= 0) { if (x - s >= minH) for (let k = s; k < x; k++) kill[y * W + k] = 1; s = -1; } } }
-  for (let x = 0; x < W; x++) { let s = -1; for (let y = 0; y <= H; y++) { const on = y < H && ink[y * W + x]; if (on && s < 0) s = y; else if (!on && s >= 0) { if (y - s >= minV) for (let k = s; k < y; k++) kill[k * W + x] = 1; s = -1; } } }
-  for (let i = 0; i < n; i++) { const v = ink[i] && !kill[i] ? 0 : 255; px[i * 4] = px[i * 4 + 1] = px[i * 4 + 2] = v; px[i * 4 + 3] = 255; }
-  ctx.putImageData(img, 0, 0);
-  return c;
-}
-async function importPhoto(side, file) {
-  const status = $('#ocr-' + side);
-  const say = (m, cls = '') => { if (status) { status.textContent = m; status.className = 'ocr-status ' + cls; } };
-  try {
-    say('Reading the photo…');
-    if (!window.Tesseract) await loadScript(OCR_DIR + 'tesseract.min.js');
-    const img = await prepImage(file);
-    const worker = await Tesseract.createWorker('eng', 1, {
-      workerPath: OCR_DIR + 'worker.min.js', corePath: OCR_DIR, langPath: OCR_DIR, gzip: true,
-      logger: m => { if (m.status === 'recognizing text') say(`Reading the photo… ${Math.round(m.progress * 100)}%`); },
-    });
-    await worker.setParameters({ tessedit_pageseg_mode: '6' }); // one block of rows
-    const { data } = await worker.recognize(img);
-    await worker.terminate();
-    const text = rowsFromWords(data) || data.text;
-    const found = parseRoster(text);
-    if (!found.length) { say('No players found in that photo. Try a closer, straighter photo, or add them by hand.', 'bad'); return; }
-    const g = game(); const team = g[side];
-    let added = 0, updated = 0;
-    for (const f of found) {
-      const ex = team.players.find(p => p.name.toLowerCase() === f.name.toLowerCase());
-      if (ex) { if (!ex.no && f.no) { ex.no = f.no; updated++; } continue; }
-      team.players.push({ id: uid(), no: f.no, name: f.name, nm: false }); added++;
-    }
-    save(); render();
-    say(`Found ${found.length} players (${added} added${updated ? `, ${updated} updated` : ''}). Check the numbers and names, and tick NM for netminders.`, 'ok');
-  } catch (err) {
-    say(navigator.onLine === false ? 'The photo reader has not finished downloading yet. Open the app once with a signal, or add players by hand.' : 'Could not read that photo. Try again, or add players by hand.', 'bad');
-    console.error(err);
-  }
-}
-/**
- * Rebuild table rows from word positions, so a number and a name on the same
- * printed row end up on the same line even if the reader split them into columns.
- */
-function rowsFromWords(data) {
-  const words = (data.words || []).filter(w => w.text && w.text.trim() && w.bbox);
-  if (words.length < 5) return '';
-  const hs = words.map(w => w.bbox.y1 - w.bbox.y0).sort((a, b) => a - b);
-  const tol = Math.max(4, hs[hs.length >> 1] * 0.6);
-  const rows = [];
-  for (const w of words.map(w => ({ t: w.text, x: w.bbox.x0, y: (w.bbox.y0 + w.bbox.y1) / 2 })).sort((a, b) => a.y - b.y)) {
-    const r = rows.find(r => Math.abs(r.y - w.y) <= tol);
-    if (r) { r.w.push(w); r.y = (r.y * (r.w.length - 1) + w.y) / r.w.length; } else rows.push({ y: w.y, w: [w] });
-  }
-  return rows.sort((a, b) => a.y - b.y).map(r => r.w.sort((a, b) => a.x - b.x).map(w => w.t).join(' ')).join('\n');
-}
-
-/**
- * Pulls "shirt number + Surname, First" out of recognised text, one player per line.
- * Built for the league team list (row, ID, Jump No., Player Name, DOB) but also
- * works for simple "No. Surname, First" lists. The shirt number is taken as the
- * last 1–2 digit number before the name, so the row count and IDs are skipped.
- */
-function parseRoster(text) {
-  const L = "A-Za-zÀ-ÿ'’";
-  const nameRe = new RegExp(`([${L}][${L}\\-]*(?:\\s[${L}][${L}\\-]+)?)\\s*,\\s*([${L}][${L}\\-]*)`);
-  const out = [];
-  for (const raw of text.split(/\n+/)) {
-    const line = raw.replace(/[|\[\]{}©®°!_"]/g, ' ').replace(/(^|\s)['’]+/g, ' ').replace(/\s+/g, ' ').trim()
-      .replace(/\b([A-Z]) ([a-z]{2,})/g, '$1$2')      // "R ebong" -> "Rebong"
-      .replace(/,\s*[-–]\s*/g, ', ');
-    const m = nameRe.exec(line);
-    if (!m) continue;
-    let surname = m[1].trim(), first = m[2].replace(/-+$/, '');
-    // a stray short token stuck in front of the surname ("BB Fizel") is noise
-    surname = surname.replace(/^[A-Z]{1,2}\s+(?=[A-Za-z]{3})/, '');
-    if (surname.length < 2 || first.length < 2) continue;
-    if (/^(player|name|jump|position|dob)$/i.test(surname)) continue;
-    const before = line.slice(0, m.index).split(' ').filter(Boolean);
-    let no = '';
-    for (let i = before.length - 1; i >= 0; i--) { if (/^\d{1,2}$/.test(before[i])) { no = String(+before[i]); break; } }
-    const cand = { no, name: `${surname}, ${first}` };
-    const dup = out.find(o => samePerson(o.name, cand.name));
-    if (dup) { if (!dup.no && no) dup.no = no; continue; }
-    out.push(cand);
-  }
-  return out;
-}
-function samePerson(a, b) {
-  const [sa, fa] = a.toLowerCase().split(/,\s*/), [sb, fb] = b.toLowerCase().split(/,\s*/);
-  const firstOk = fa && fb && (fa.startsWith(fb.slice(0, 3)) || fb.startsWith(fa.slice(0, 3)));
-  const surOk = sa === sb || (Math.min(sa.length, sb.length) >= 3 && (sa.endsWith(sb) || sb.endsWith(sa)));
-  return firstOk && surOk;
 }
 
 /* ============================================================

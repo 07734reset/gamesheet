@@ -145,3 +145,6 @@ details { margin-top: 10px; } summary { color: var(--brand); cursor: pointer; }
 .stepbody input.clock { margin-top: 8px; }
 .entry.editing { border-color: var(--brand); box-shadow: 0 0 0 2px rgba(11,61,110,.15); }
 .seg.kind button { font-size: 16px; }
+
+.to { display: flex; align-items: center; gap: 10px; }
+.to .count { min-width: 24px; text-align: center; font-size: 20px; }
