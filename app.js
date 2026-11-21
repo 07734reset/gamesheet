@@ -240,6 +240,7 @@ function viewGames() {
   return `
   <section class="card">
     <button class="btn primary big" data-action="new-game">+ New game</button>
+    <label class="btn big gd">📄 New game from Gameday PDF<input type="file" accept="application/pdf,.pdf" hidden data-action="gameday" data-new="1"></label>
   </section>
   <section class="card">
     <h2>Saved games</h2>
@@ -262,6 +263,8 @@ function viewPre(g) {
   return `
   <section class="card form">
     <h2>Game details</h2>
+    <label class="btn gd">📄 Fill from Gameday PDF<input type="file" accept="application/pdf,.pdf" hidden data-action="gameday"></label>
+    <div class="ocr-status" id="gd-status"></div>
     <label>Competition / league
       <select data-bind="league">
         <option value="">Pick a league</option>
@@ -697,7 +700,8 @@ document.addEventListener('input', e => {
 });
 document.addEventListener('change', e => {
   const el = e.target;
-  if (el.dataset.action === 'photo' && el.files && el.files[0]) { importPhoto(el.dataset.side, el.files[0]); el.value = ''; }
+  if (el.dataset.action === 'gameday' && el.files && el.files[0]) { importGameday(el.files[0], !!el.dataset.new); el.value = ''; }
+  else if (el.dataset.action === 'photo' && el.files && el.files[0]) { importPhoto(el.dataset.side, el.files[0]); el.value = ''; }
   else if (el.dataset.player && el.dataset.field === 'no') render(); // re-sort/flag duplicates
 });
 window.addEventListener('resize', () => tab === 'sheet' && fitSheet());
@@ -869,6 +873,106 @@ function samePerson(a, b) {
   const firstOk = fa && fb && (fa.startsWith(fb.slice(0, 3)) || fb.startsWith(fa.slice(0, 3)));
   const surOk = sa === sb || (Math.min(sa.length, sb.length) >= 3 && (sa.endsWith(sb) || sb.endsWith(sa)));
   return firstOk && surOk;
+}
+
+/* ============================================================
+   Gameday team sheet PDF → game details + both rosters
+   ============================================================ */
+const PDF_DIR = 'vendor/pdfjs/';  // pdf.js 3.11.174 (Apache-2.0)
+
+/** Map Gameday's grade ("U16 South 1", "U19 National") to a league in the list. */
+function matchLeague(grade) {
+  const g = (grade || '').trim();
+  const exact = REF.leagues.find(l => l.name.toLowerCase() === g.toLowerCase());
+  if (exact) return exact.name;
+  const age = /U\s?(\d{2})/i.exec(g);
+  if (!age) return '';
+  if (/national/i.test(g)) return REF.leagues.find(l => l.name === `U${age[1]} National`)?.name || '';
+  const div = /(?:south|s|div(?:ision)?)\s*(\d)/i.exec(g.replace(age[0], ''));
+  return div ? (REF.leagues.find(l => l.name === `U${age[1]} S${div[1]}`)?.name || '') : '';
+}
+
+/** Read each page's text into rows of cells (top to bottom, left to right). */
+async function pdfRows(file) {
+  if (!window.pdfjsLib) await loadScript(PDF_DIR + 'pdf.min.js');
+  pdfjsLib.GlobalWorkerOptions.workerSrc = PDF_DIR + 'pdf.worker.min.js';
+  const pdf = await pdfjsLib.getDocument({ data: await file.arrayBuffer(), isEvalSupported: false }).promise;
+  const rows = [];
+  for (let n = 1; n <= pdf.numPages; n++) {
+    const page = await pdf.getPage(n);
+    const items = (await page.getTextContent()).items.filter(i => i.str && i.str.trim())
+      .map(i => ({ s: i.str.trim(), x: i.transform[4], y: -i.transform[5] + n * 10000, h: Math.abs(i.transform[3]) || 8 }));
+    items.sort((a, b) => a.y - b.y || a.x - b.x);
+    const pageRows = [];
+    for (const it of items) {
+      const r = pageRows.find(r => Math.abs(r.y - it.y) <= Math.max(2, it.h * 0.4));
+      if (r) r.c.push(it); else pageRows.push({ y: it.y, c: [it] });
+    }
+    pageRows.forEach(r => r.c.sort((a, b) => a.x - b.x));
+    rows.push(...pageRows.sort((a, b) => a.y - b.y).map(r => r.c));
+  }
+  return rows;
+}
+
+function parseGameday(rows) {
+  const out = { home: { name: '', players: [] }, away: { name: '', players: [] }, date: '', time: '', venue: '', grade: '' };
+  let side = null;
+  for (const cells of rows) {
+    const line = cells.map(c => c.s).join(' ').replace(/\s+/g, ' ');
+    const team = /(?:^|\s)TEAM:\s*(.+?)(?:\s+SCORING\b|$)/.exec(line);
+    if (team && !/HOME TEAM|AWAY TEAM/i.test(line.slice(0, team.index + 12))) {
+      side = side ? 'away' : 'home';
+      out[side].name = team[1].trim();
+      continue;
+    }
+    if (!out.date) { const m = /Date:\s*(\d{1,2})\/(\d{1,2})\/(\d{2,4})/i.exec(line); if (m) out.date = `${m[3].length === 2 ? '20' + m[3] : m[3]}-${pad(m[2])}-${pad(m[1])}`; }
+    if (!out.time) { const m = /Time:\s*(\d{1,2}:\d{2})/i.exec(line); if (m) out.time = m[1].padStart(5, '0'); }
+    if (!out.venue) { const m = /Venue:\s*(.+?)\s*$/i.exec(line); if (m) out.venue = m[1].replace(/\s+(Grade|ICE HOCKEY).*$/i, '').trim(); }
+    if (!out.grade) { const m = /(?:Grade|Competition):\s*(.+?)\s*$/i.exec(line); if (m) out.grade = m[1].trim(); }
+    if (!side) continue;
+    // A roster row: row count, shirt number, "Surname, First"
+    let p = null;
+    const i = cells.findIndex(c => /,/.test(c.s) && /[A-Za-z]/.test(c.s));
+    if (i >= 1 && /^\d{1,3}$/.test(cells[i - 1].s)) p = { no: String(+cells[i - 1].s), name: cells[i].s };
+    else {
+      const m = /^\d{1,2}\s+(\d{1,3})\s+([^,\d]+,\s*[A-Za-zÀ-ÿ'’\- ]+?)(?:\s+[A-Z]{2,5}(?:-[A-Z])?\b.*)?$/.exec(line);
+      if (m) p = { no: String(+m[1]), name: m[2].trim() };
+    }
+    if (p && !out[side].players.some(x => x.name === p.name)) out[side].players.push(p);
+  }
+  return out;
+}
+
+async function importGameday(file, asNew) {
+  if (asNew) { newGame(); drafts.goal = drafts.pen = drafts.editingGoal = drafts.editingPen = null; tab = 'pre'; render(); }
+  const status = () => $('#gd-status');
+  const say = (m, cls = '') => { const s = status(); if (s) { s.textContent = m; s.className = 'ocr-status ' + cls; } else toast(m); };
+  try {
+    say('Reading the Gameday PDF…');
+    const d = parseGameday(await pdfRows(file));
+    if (!d.home.players.length && !d.away.players.length && !d.home.name) { say("That PDF doesn't look like a Gameday team sheet.", 'bad'); return; }
+    const g = game();
+    for (const side of ['home', 'away']) {
+      if (d[side].name) g[side].name = d[side].name;
+      if (d[side].players.length) g[side].players = d[side].players.map(p => {
+        const old = g[side].players.find(o => o.name.toLowerCase() === p.name.toLowerCase());
+        return old ? { ...old, no: p.no } : { id: uid(), no: p.no, name: p.name, nm: false };
+      }).concat(g[side].players.filter(o => isReferenced(g, side, o.id) && !d[side].players.some(p => p.name.toLowerCase() === o.name.toLowerCase())));
+    }
+    if (d.date) g.date = d.date;
+    if (d.time) g.time = d.time;
+    if (d.venue) g.venue = d.venue;
+    const lg = matchLeague(d.grade);
+    if (lg) g.league = lg;
+    save(); render();
+    const msg = `Filled from Gameday: ${d.home.players.length} home and ${d.away.players.length} away players.` +
+      (d.grade && !lg ? ` Couldn't match the grade "${d.grade}" to a league, so please pick it.` : '') +
+      ' Tick NM for the netminders on the Rosters tab.';
+    say(msg, d.grade && !lg ? 'bad' : 'ok');
+  } catch (err) {
+    console.error(err);
+    say(navigator.onLine === false ? 'The PDF reader has not finished downloading yet. Open the app once with a signal.' : 'Could not read that PDF.', 'bad');
+  }
 }
 
 /* ---------- boot ---------- */

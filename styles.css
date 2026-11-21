@@ -130,3 +130,8 @@ details { margin-top: 10px; } summary { color: var(--brand); cursor: pointer; }
   .sheet { break-inside: avoid; page-break-after: avoid; }
   * { -webkit-print-color-adjust: exact; print-color-adjust: exact; }
 }
+
+.btn.gd { width: 100%; margin-top: 8px; }
+
+[hidden] { display: none !important; }
+.form label.btn { display: flex; color: var(--ink); font-size: 15px; margin: 0 0 4px; }
