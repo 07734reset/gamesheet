@@ -1,5 +1,5 @@
 // Offline support: the app itself is cached on install; the photo reader is cached the first time it is used.
-const VERSION = 'gamesheet-v6';
+const VERSION = 'gamesheet-v7';
 const OCR = ['vendor/pdfjs/pdf.min.js', 'vendor/pdfjs/pdf.worker.min.js'];
 const SHELL = ['./', 'index.html', 'styles.css', 'app.js', 'data.js', 'manifest.webmanifest', 'icon.svg', 'icon-192.png', 'icon-512.png', 'logo.png'];
 self.addEventListener('install', e => {

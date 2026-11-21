@@ -237,8 +237,16 @@ function render() {
 
 /* ---------- Games list ---------- */
 function viewGames() {
+  const inc = incoming ? `
+  <section class="card incoming">
+    <h2>📨 Game sent to you</h2>
+    <p><strong>${esc(incoming.home.name || 'Home')} ${sum(stats(incoming).score.home)}–${sum(stats(incoming).score.away)} ${esc(incoming.away.name || 'Away')}</strong><br>
+    <span class="muted">${esc(fmtDate(incoming.date))} · ${esc(incoming.league || 'No league')} · ${incoming.goals.length} goals, ${incoming.penalties.length} penalties</span></p>
+    ${state.games[incoming.id] ? '<p class="small warn">You already have this game. Loading it replaces your copy.</p>' : ''}
+    <div class="btnrow"><button class="btn primary" data-action="accept-incoming">Load and carry on</button><button class="btn" data-action="reject-incoming">Ignore</button></div>
+  </section>` : '';
   const list = Object.values(state.games).sort((a, b) => (b.date || '').localeCompare(a.date || '') || b.updated - a.updated);
-  return `
+  return `${inc}
   <section class="card">
     <button class="btn primary big" data-action="new-game">+ New game</button>
     <label class="btn big gd">📄 New game from Gameday PDF<input type="file" accept="application/pdf,.pdf" hidden data-action="gameday" data-new="1"></label>
@@ -252,9 +260,14 @@ function viewGames() {
           <strong>${esc(x.home.name || 'Home')} ${sum(st.score.home)}–${sum(st.score.away)} ${esc(x.away.name || 'Away')}</strong>
           <div class="muted">${esc(fmtDate(x.date))} · ${esc(x.league || 'No league')} · ${esc(x.venue)}</div>
         </div>
+        <button class="btn small" data-action="share-game" data-id="${x.id}">Send</button>
         <button class="btn small danger" data-action="delete-game" data-id="${x.id}">Delete</button>
       </li>`; }).join('')}</ul>` : '<p class="muted">No games yet.</p>'}
-    <p class="muted small">Games are kept on this device only. Nothing is uploaded.</p>
+    <p class="muted small">Games are kept on this device only. "Send" shares a game as a link, so someone else with the app can carry on with it.</p>
+    <details class="paste"><summary>Got a link but it opened in the wrong place?</summary>
+      <p class="muted small">Paste it here to load the game.</p>
+      <div class="row3 two"><input id="pasteLink" placeholder="Paste the link" autocomplete="off"><button class="btn small" data-action="paste-link">Load</button></div>
+    </details>
   </section>`;
 }
 function fmtDate(iso) { if (!iso) return ''; const [y, m, d] = iso.split('-'); return `${d}/${m}/${y}`; }
@@ -496,6 +509,7 @@ function viewSheet(g) {
   <section class="card">
     <div class="btnrow">
       <button class="btn primary big" data-action="print">🖨 Print / save PDF</button>
+      <button class="btn big" data-action="share-game" data-id="${g.id}">📤 Send to someone to carry on</button>
     </div>
     ${missing.length ? `<p class="warn">Missing: ${missing.join(', ')}.</p>` : ''}
     <p class="muted small">Prints one A4 landscape page. On iPhone/iPad: Share → Print, or pinch out on the print preview to save a PDF.</p>
@@ -681,6 +695,12 @@ document.addEventListener('click', e => {
     case 'add-to': g.timeouts[side].push({}); save(); break;
     case 'del-to': g.timeouts[side].pop(); save(); break;
     case 'print': doPrint(g); return;
+    case 'share-game': shareGame(state.games[id]); return;
+    case 'accept-incoming': state.games[incoming.id] = incoming; state.currentId = incoming.id; incoming = null; save();
+      drafts.ev = drafts.editing = null; tab = 'game'; toast('Game loaded'); break;
+    case 'reject-incoming': incoming = null; break;
+    case 'paste-link': { const v = $('#pasteLink').value; const i = v.indexOf('#g='); if (i < 0) { toast("That doesn't look like a game link."); return; }
+      readShared(v.slice(i + 3)); return; }
     default: return;
   }
   render();
@@ -873,8 +893,51 @@ async function importGameday(file, asNew) {
   }
 }
 
+/* ============================================================
+   Send a game to someone else, as a link.
+   The game travels in the part of the link after "#", which browsers never send to a server.
+   ============================================================ */
+let incoming = null;
+const b64u = bytes => { let s = ''; for (let i = 0; i < bytes.length; i += 0x8000) s += String.fromCharCode.apply(null, bytes.subarray(i, i + 0x8000)); return btoa(s).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, ''); };
+const unb64u = str => Uint8Array.from(atob(str.replace(/-/g, '+').replace(/_/g, '/')), c => c.charCodeAt(0));
+async function pipe(bytes, stream) { return new Uint8Array(await new Response(new Blob([bytes]).stream().pipeThrough(stream)).arrayBuffer()); }
+async function encodeGame(g) {
+  const raw = new TextEncoder().encode(JSON.stringify(g));
+  if (window.CompressionStream) return 'z' + b64u(await pipe(raw, new CompressionStream('deflate-raw')));
+  return 'j' + b64u(raw);
+}
+async function decodeGame(code) {
+  const kind = code[0], bytes = unb64u(decodeURIComponent(code.slice(1)));
+  const raw = kind === 'z' ? await pipe(bytes, new DecompressionStream('deflate-raw')) : bytes;
+  const g = JSON.parse(new TextDecoder().decode(raw));
+  if (!g || !g.id || !g.home || !g.away || !Array.isArray(g.goals) || !Array.isArray(g.penalties)) throw new Error('not a game');
+  g.netminders ||= { home: blankNM(), away: blankNM() }; g.timeouts ||= { home: [], away: [] };
+  return g;
+}
+async function shareGame(g) {
+  if (!g) return;
+  try {
+    const url = location.origin + location.pathname + '#g=' + await encodeGame(g);
+    const title = `${g.home.name || 'Home'} v ${g.away.name || 'Away'}`;
+    const text = `Gamesheet: ${title} (${fmtDate(g.date)}). Open the link to load it and carry on.`;
+    if (navigator.share) { await navigator.share({ title, text, url }); return; }
+    await navigator.clipboard.writeText(url);
+    toast('Link copied. Paste it into a message to send it.');
+  } catch (e) { if (e && e.name !== 'AbortError') toast('Could not share from this browser.'); }
+}
+async function readShared(code) {
+  try { incoming = await decodeGame(code); tab = 'games'; render(); window.scrollTo(0, 0); }
+  catch (e) { toast('That game link is incomplete or damaged.'); }
+}
+function checkHash() {
+  const h = location.hash;
+  if (h.startsWith('#g=')) { history.replaceState(null, '', location.pathname); readShared(h.slice(3)); }
+}
+window.addEventListener('hashchange', checkHash);
+
 /* ---------- boot ---------- */
 render();
+checkHash();
 (function splash() {
   const el = document.getElementById('splash'); if (!el) return;
   const hide = () => { if (el.classList.contains('out')) return; el.classList.add('out'); setTimeout(() => el.remove(), 600); };
