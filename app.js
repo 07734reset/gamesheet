@@ -875,6 +875,12 @@ async function importGameday(file, asNew) {
 
 /* ---------- boot ---------- */
 render();
+(function splash() {
+  const el = document.getElementById('splash'); if (!el) return;
+  const hide = () => { if (el.classList.contains('out')) return; el.classList.add('out'); setTimeout(() => el.remove(), 600); };
+  el.addEventListener('click', hide);
+  setTimeout(hide, matchMedia('(prefers-reduced-motion: reduce)').matches ? 900 : 2600);
+})();
 if ('serviceWorker' in navigator && location.protocol === 'https:') {
   navigator.serviceWorker.register('sw.js').catch(() => {});
 }

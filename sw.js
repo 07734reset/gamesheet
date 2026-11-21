@@ -1,7 +1,7 @@
 // Offline support: the app itself is cached on install; the photo reader is cached the first time it is used.
-const VERSION = 'gamesheet-v5';
+const VERSION = 'gamesheet-v6';
 const OCR = ['vendor/pdfjs/pdf.min.js', 'vendor/pdfjs/pdf.worker.min.js'];
-const SHELL = ['./', 'index.html', 'styles.css', 'app.js', 'data.js', 'manifest.webmanifest', 'icon.svg', 'icon-192.png', 'icon-512.png'];
+const SHELL = ['./', 'index.html', 'styles.css', 'app.js', 'data.js', 'manifest.webmanifest', 'icon.svg', 'icon-192.png', 'icon-512.png', 'logo.png'];
 self.addEventListener('install', e => {
   e.waitUntil(caches.open(VERSION).then(c => c.addAll(SHELL)).then(() => self.skipWaiting()));
   // The PDF reader (~1.5 MB): fetch it in the background so Gameday sheets can be read offline later.
