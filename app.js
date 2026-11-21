@@ -49,8 +49,8 @@ const fmtH = sec => (sec == null || isNaN(sec)) ? '00:00:00' : `${pad(Math.floor
 
 /* ---------- state ---------- */
 let state = load();
-let tab = state.currentId && state.games[state.currentId] ? 'goals' : 'games';
-const drafts = { goal: null, pen: null, editingGoal: null, editingPen: null };
+let tab = state.currentId && state.games[state.currentId] ? 'game' : 'games';
+const drafts = { goal: null, pen: null, editingGoal: null, editingPen: null, ev: null, editing: null };
 
 function load() {
   try {
@@ -218,8 +218,8 @@ const sum = a => a.reduce((x, y) => x + (+y || 0), 0);
    Rendering
    ============================================================ */
 const TABS = [
-  ['games', 'Games'], ['pre', 'Pre-game'], ['rosters', 'Rosters'], ['goals', 'Goals'],
-  ['pens', 'Penalties'], ['extras', 'Netminders'], ['sheet', 'Sheet'],
+  ['games', 'Games'], ['pre', 'Pre-game'], ['rosters', 'Rosters'], ['game', 'Game'],
+  ['extras', 'Netminders'], ['sheet', 'Sheet'],
 ];
 
 function render() {
@@ -227,7 +227,8 @@ function render() {
   $('#tabs').innerHTML = TABS.map(([k, label]) =>
     `<button class="tab ${tab === k ? 'on' : ''}" data-tab="${k}" ${!g && k !== 'games' ? 'disabled' : ''}>${label}</button>`).join('');
   $('#gameTitle').textContent = g ? `${g.home.name || 'Home'} v ${g.away.name || 'Away'}` : 'Gamesheet';
-  const views = { games: viewGames, pre: viewPre, rosters: viewRosters, goals: viewGoals, pens: viewPens, extras: viewExtras, sheet: viewSheet };
+  if (g) autoNetminders(g);
+  const views = { games: viewGames, pre: viewPre, rosters: viewRosters, game: viewGame, extras: viewExtras, sheet: viewSheet };
   $('#main').innerHTML = (g || tab === 'games') ? views[tab](g) : viewGames();
   $('#printArea').innerHTML = g ? sheetHTML(g) : '';
   if (tab === 'sheet') fitSheet();
@@ -319,46 +320,100 @@ function dupWarning(t) {
   return d.size ? ` · <span class="warn">duplicate number ${[...d].join(', ')}</span>` : '';
 }
 
-/* ---------- Goals ---------- */
-function viewGoals(g) {
-  const d = drafts.goal ||= { team: 'home', period: '1', clock: '', scorer: '', a1: '', a2: '', type: 'E' };
-  const editing = drafts.editingGoal;
-  const st = stats(g);
+/* ---------- Game: one entry flow for every event ---------- */
+const blankEvent = (period = '1') => ({ period, clock: '', team: '', kind: '', scorer: '', a1: '', a2: '', gtype: 'E', playerId: '', ptype: '2', offence: '', startOverride: '', endOverride: '' });
+function viewGame(g) {
+  const d = drafts.ev ||= blankEvent();
+  const ed = drafts.editing;
+  const st = stats(g), times = computePenalties(g);
+  const step = (n, title, body) => `<div class="step"><div class="stepno">${n}</div><div class="stepbody"><div class="steptitle">${title}</div>${body}</div></div>`;
+  let details = '';
+  if (d.team && d.kind === 'goal') details = `
+      <label>Scorer <select data-draft="ev.scorer">${playerOptions(g, d.team, d.scorer, { blank: 'Pick scorer' })}</select></label>
+      <div class="row2">
+        <label>Assist 1 <select data-draft="ev.a1">${playerOptions(g, d.team, d.a1, { blank: 'None' })}</select></label>
+        <label>Assist 2 <select data-draft="ev.a2">${playerOptions(g, d.team, d.a2, { blank: 'None' })}</select></label>
+      </div>
+      <label>Type <select data-draft="ev.gtype">${REF.goalCodes.map(([c, n]) => `<option value="${c}" ${c === d.gtype ? 'selected' : ''}>${c} · ${esc(n)}</option>`).join('')}</select></label>`;
+  else if (d.team && d.kind === 'pen') details = `
+      <label>Player <select data-draft="ev.playerId">${playerOptions(g, d.team, d.playerId, { blank: 'Pick player', bench: true })}</select></label>
+      <label>Penalty <select data-draft="ev.ptype">${Object.entries(PEN_TYPES).map(([k, v]) => `<option value="${k}" ${k === d.ptype ? 'selected' : ''}>${v.label} · ${v.name}</option>`).join('')}</select></label>
+      <label>Offence <select data-draft="ev.offence"><option value="">Pick offence</option>${REF.penaltyCodes.map(([c, n]) => `<option value="${c}" ${c === d.offence ? 'selected' : ''}>${c} · ${esc(n)}</option>`).join('')}</select></label>
+      <details ${d.startOverride || d.endOverride ? 'open' : ''}>
+        <summary>Override start / end time</summary>
+        <p class="muted small">Leave blank to work them out automatically. Use sheet time (since start of play), e.g. 24:38.</p>
+        <div class="row2">
+          <label>Start <input inputmode="numeric" value="${esc(d.startOverride)}" data-draft="ev.startOverride" placeholder="auto"></label>
+          <label>End <input inputmode="numeric" value="${esc(d.endOverride)}" data-draft="ev.endOverride" placeholder="auto"></label>
+        </div>
+      </details>`;
+  const events = [
+    ...sortedGoals(g).map(x => ({ kind: 'goal', t: x.t, x })),
+    ...sortedPens(g, null, times).map(x => ({ kind: 'pen', t: x.given, x })),
+  ].sort((a, b) => (b.t ?? -1) - (a.t ?? -1));
   return `
   ${scoreBar(g, st)}
-  <section class="card form">
-    <h2>${editing ? 'Edit goal' : 'Add goal'}</h2>
-    ${teamToggle('goal', d.team, g)}
-    ${periodToggle('goal', d.period)}
-    <label>Clock (time left)
-      <input id="goalClock" class="clock" inputmode="numeric" autocomplete="off" placeholder="e.g. 722 for 7:22" value="${esc(d.clock)}" data-draft="goal.clock">
-    </label>
-    <div class="preview" id="goalPreview"></div>
-    <label>Scorer <select data-draft="goal.scorer">${playerOptions(g, d.team, d.scorer, { blank: 'Pick scorer' })}</select></label>
-    <div class="row2">
-      <label>Assist 1 <select data-draft="goal.a1">${playerOptions(g, d.team, d.a1, { blank: 'None' })}</select></label>
-      <label>Assist 2 <select data-draft="goal.a2">${playerOptions(g, d.team, d.a2, { blank: 'None' })}</select></label>
-    </div>
-    <label>Type <select data-draft="goal.type">${REF.goalCodes.map(([c, n]) => `<option value="${c}" ${c === d.type ? 'selected' : ''}>${c} · ${esc(n)}</option>`).join('')}</select></label>
-    <div class="btnrow">
-      <button class="btn primary" data-action="save-goal">${editing ? 'Save changes' : 'Add goal'}</button>
-      ${editing ? '<button class="btn" data-action="cancel-goal">Cancel</button>' : ''}
-    </div>
+  <section class="card form entry ${ed ? 'editing' : ''}">
+    <h2>${ed ? (ed.kind === 'goal' ? 'Edit goal' : 'Edit penalty') : 'New event'}</h2>
+    ${step(1, 'When? Period and time on the clock', `
+      ${periodToggle('ev', d.period)}
+      <input id="evClock" class="clock" inputmode="numeric" autocomplete="off" placeholder="e.g. 722 for 7:22" value="${esc(d.clock)}" data-draft="ev.clock" aria-label="Time on the clock">
+      <div class="preview" id="evPreview"></div>`)}
+    ${step(2, 'Which team?', teamToggle('ev', d.team, g))}
+    ${d.team ? step(3, 'Goal or penalty?', `<div class="seg kind">
+        <button class="${d.kind === 'goal' ? 'on' : ''}" data-set="ev.kind" data-val="goal">🥅 Goal</button>
+        <button class="${d.kind === 'pen' ? 'on' : ''}" data-set="ev.kind" data-val="pen">⛔ Penalty</button></div>`) : ''}
+    ${details ? step(4, d.kind === 'goal' ? 'Goal details' : 'Penalty details', details + `
+      <div class="btnrow">
+        <button class="btn primary" data-action="save-event">${ed ? 'Save changes' : d.kind === 'goal' ? 'Add goal' : 'Add penalty'}</button>
+        ${ed ? '<button class="btn" data-action="cancel-event">Cancel</button>' : ''}
+      </div>`) : ''}
   </section>
   <section class="card">
-    <h2>Goals</h2>
-    ${g.goals.length ? `<ul class="list">${sortedGoals(g).map(x => `
-      <li>
-        <div class="grow" data-action="edit-goal" data-id="${x.id}">
-          <span class="pill ${x.team}">${x.team === 'home' ? 'H' : 'A'}</span>
-          <strong>${fmt(x.t) || '??'}</strong> ${esc(x.type)} · #${esc(noOf(g, x.team, x.scorer))}
-          ${x.a1 ? ` (${esc(noOf(g, x.team, x.a1))}${x.a2 ? ', ' + esc(noOf(g, x.team, x.a2)) : ''})` : ''}
-          <div class="muted small">P${x.period} · clock ${esc(fmt(parseClock(x.clock)))}</div>
-        </div>
-        <button class="btn small ghost" data-action="del-goal" data-id="${x.id}" aria-label="Delete">✕</button>
-      </li>`).join('')}</ul>` : '<p class="muted">No goals yet.</p>'}
+    <h2>Events <span class="muted small">latest first · tap to edit</span></h2>
+    ${events.length ? `<ul class="list">${events.map(e => e.kind === 'goal' ? goalItem(g, e.x) : penItem(g, e.x)).join('')}</ul>` : '<p class="muted">Nothing yet.</p>'}
   </section>`;
 }
+function goalItem(g, x) {
+  return `<li>
+    <div class="grow" data-action="edit-goal" data-id="${x.id}">
+      <span class="pill ${x.team}">${x.team === 'home' ? 'H' : 'A'}</span>
+      <strong>${fmt(x.t) || '??'}</strong> 🥅 Goal ${esc(x.type)} · #${esc(noOf(g, x.team, x.scorer))}${x.a1 ? ` (${esc(noOf(g, x.team, x.a1))}${x.a2 ? ', ' + esc(noOf(g, x.team, x.a2)) : ''})` : ''}
+      <div class="muted small">P${x.period} · clock ${esc(fmt(parseClock(x.clock)))}</div>
+    </div>
+    <button class="btn small ghost" data-action="del-goal" data-id="${x.id}" aria-label="Delete">✕</button>
+  </li>`;
+}
+function penItem(g, x) {
+  const ty = PEN_TYPES[x.type];
+  let note = '';
+  if (x.adj && !x.endOverride) note = `<div class="note">${x.adj.endAt != null ? 'Ended early' : 'Second half restarted'} by PP goal at ${fmt(x.adj.endAt ?? x.adj.dmHalf)} <button class="link" data-action="toggle-pp" data-id="${x.id}">undo</button></div>`;
+  else if (x.noPP) note = `<div class="note">Power-play goals ignored for this penalty <button class="link" data-action="toggle-pp" data-id="${x.id}">re-apply</button></div>`;
+  return `<li>
+    <div class="grow" data-action="edit-pen" data-id="${x.id}">
+      <span class="pill ${x.team}">${x.team === 'home' ? 'H' : 'A'}</span>
+      <strong>${fmt(x.given) || '??'}</strong> ⛔ #${esc(noOf(g, x.team, x.playerId))} ${ty.label} ${esc(x.offence)}
+      <div class="muted small">Start ${fmt(x.start)} · End ${x.end == null ? (ty.dur == null ? '—' : '') : fmt(x.end)}${x.startOverride || x.endOverride ? ' (manual)' : ''}</div>
+      ${note}
+    </div>
+    <button class="btn small ghost" data-action="del-pen" data-id="${x.id}" aria-label="Delete">✕</button>
+  </li>`;
+}
+function saveEvent(g) {
+  const d = drafts.ev, ed = drafts.editing;
+  if (d.kind === 'goal') {
+    drafts.goal = { team: d.team, period: d.period, clock: d.clock, scorer: d.scorer, a1: d.a1, a2: d.a2, type: d.gtype };
+    drafts.editingGoal = ed && ed.kind === 'goal' ? ed.id : null;
+    if (!saveGoal(g)) return false;
+  } else {
+    drafts.pen = { team: d.team, period: d.period, clock: d.clock, playerId: d.playerId, type: d.ptype, offence: d.offence, startOverride: d.startOverride, endOverride: d.endOverride };
+    drafts.editingPen = ed && ed.kind === 'pen' ? ed.id : null;
+    if (!savePen(g)) return false;
+  }
+  drafts.ev = blankEvent(d.period); drafts.editing = null;
+  return true;
+}
+
 function scoreBar(g, st) {
   return `<section class="scorebar">
     <div><span>${esc(g.home.name || 'Home')}</span><b>${sum(st.score.home)}</b></div>
@@ -373,56 +428,30 @@ function periodToggle(form, val) {
   return `<div class="seg">${PERIODS.map(p => `<button class="${val === p ? 'on' : ''}" data-set="${form}.period" data-val="${p}">${p === 'OT' ? 'OT' : 'P' + p}</button>`).join('')}</div>`;
 }
 
-/* ---------- Penalties ---------- */
-function viewPens(g) {
-  const d = drafts.pen ||= { team: 'home', period: '1', clock: '', playerId: '', type: '2', offence: '', startOverride: '', endOverride: '' };
-  const editing = drafts.editingPen;
-  const times = computePenalties(g);
-  return `
-  <section class="card form">
-    <h2>${editing ? 'Edit penalty' : 'Add penalty'}</h2>
-    ${teamToggle('pen', d.team, g)}
-    ${periodToggle('pen', d.period)}
-    <label>Clock (time left)
-      <input id="penClock" class="clock" inputmode="numeric" autocomplete="off" placeholder="e.g. 722 for 7:22" value="${esc(d.clock)}" data-draft="pen.clock">
-    </label>
-    <div class="preview" id="penPreview"></div>
-    <label>Player <select data-draft="pen.playerId">${playerOptions(g, d.team, d.playerId, { blank: 'Pick player', bench: true })}</select></label>
-    <label>Penalty <select data-draft="pen.type">${Object.entries(PEN_TYPES).map(([k, v]) => `<option value="${k}" ${k === d.type ? 'selected' : ''}>${v.label} · ${v.name}</option>`).join('')}</select></label>
-    <label>Offence <select data-draft="pen.offence"><option value="">Pick offence</option>${REF.penaltyCodes.map(([c, n]) => `<option value="${c}" ${c === d.offence ? 'selected' : ''}>${c} · ${esc(n)}</option>`).join('')}</select></label>
-    <details ${d.startOverride || d.endOverride ? 'open' : ''}>
-      <summary>Override start / end time</summary>
-      <p class="muted small">Leave blank to work them out automatically. Use sheet time (since start of play), e.g. 24:38.</p>
-      <div class="row2">
-        <label>Start <input inputmode="numeric" value="${esc(d.startOverride)}" data-draft="pen.startOverride" placeholder="auto"></label>
-        <label>End <input inputmode="numeric" value="${esc(d.endOverride)}" data-draft="pen.endOverride" placeholder="auto"></label>
-      </div>
-    </details>
-    <div class="btnrow">
-      <button class="btn primary" data-action="save-pen">${editing ? 'Save changes' : 'Add penalty'}</button>
-      ${editing ? '<button class="btn" data-action="cancel-pen">Cancel</button>' : ''}
-    </div>
-  </section>
-  <section class="card">
-    <h2>Penalties</h2>
-    ${g.penalties.length ? `<ul class="list">${sortedPens(g, null, times).map(x => {
-      const ty = PEN_TYPES[x.type];
-      let note = '';
-      if (x.adj && !x.endOverride) note = `<div class="note">${x.adj.endAt != null ? 'Ended early' : 'Second half restarted'} by PP goal at ${fmt(x.adj.endAt ?? x.adj.dmHalf)} <button class="link" data-action="toggle-pp" data-id="${x.id}">undo</button></div>`;
-      else if (x.noPP) note = `<div class="note">Power-play goals ignored for this penalty <button class="link" data-action="toggle-pp" data-id="${x.id}">re-apply</button></div>`;
-      return `<li>
-        <div class="grow" data-action="edit-pen" data-id="${x.id}">
-          <span class="pill ${x.team}">${x.team === 'home' ? 'H' : 'A'}</span>
-          #${esc(noOf(g, x.team, x.playerId))} <strong>${ty.label}</strong> ${esc(x.offence)}
-          <div class="muted small">Given ${fmt(x.given) || '??'} · Start ${fmt(x.start)} · End ${x.end == null ? (ty.dur == null ? '—' : '') : fmt(x.end)}${x.startOverride || x.endOverride ? ' (manual)' : ''}</div>
-          ${note}
-        </div>
-        <button class="btn small ghost" data-action="del-pen" data-id="${x.id}" aria-label="Delete">✕</button>
-      </li>`; }).join('')}</ul>` : '<p class="muted">No penalties yet.</p>'}
-  </section>`;
-}
-
 /* ---------- Netminders, time outs ---------- */
+/** Netminder dropdowns list only players ticked NM; empty rows fill themselves in. */
+function autoNetminders(g) {
+  let changed = false;
+  for (const side of ['home', 'away']) {
+    const nms = sortedPlayers(g, side).filter(p => p.nm);
+    const rows = g.netminders[side].rows;
+    for (const r of rows) {
+      const p = r.playerId && g[side].players.find(p => p.id === r.playerId);
+      const blank = !r.toi && r.shots.every(v => !v);
+      if (r.playerId && (!p || !p.nm) && blank) { r.playerId = ''; changed = true; }
+    }
+    for (const r of rows) {
+      if (r.playerId) continue;
+      const next = nms.find(p => !rows.some(x => x.playerId === p.id));
+      if (next) { r.playerId = next.id; changed = true; }
+    }
+  }
+  if (changed) save();
+}
+function nmOptions(g, side, selected, blank) {
+  const list = sortedPlayers(g, side).filter(p => p.nm || p.id === selected);
+  return `<option value="">${esc(blank)}</option>` + list.map(p => `<option value="${p.id}" ${p.id === selected ? 'selected' : ''}>${esc(p.no || '?')} · ${esc(p.name)}</option>`).join('');
+}
 function viewExtras(g) {
   const L = periodLen(g);
   return ['home', 'away'].map(side => {
@@ -432,10 +461,10 @@ function viewExtras(g) {
     return `
     <section class="card form">
       <h2>${side === 'home' ? 'Home' : 'Away'} netminders · ${esc(g[side].name || '')}</h2>
-      <p class="muted small">Shots on goal faced, per period. Time on ice as mm:ss.</p>
+      <p class="muted small">${g[side].players.some(p => p.nm) ? 'Shots on goal faced, per period. Time on ice as mm:ss.' : '<span class="warn">No netminders ticked yet.</span> Tick NM next to them on the Rosters tab and they will appear here.'}</p>
       ${nm.rows.map((r, i) => `
         <div class="nmrow">
-          <select data-nm="${side}.rows.${i}.playerId">${playerOptions(g, side, r.playerId, { blank: 'Netminder ' + (i + 1) })}</select>
+          <select data-nm="${side}.rows.${i}.playerId">${nmOptions(g, side, r.playerId, 'Netminder ' + (i + 1))}</select>
           <div class="row2">
             <label>Time on <input inputmode="numeric" value="${esc(r.toi)}" data-nm="${side}.rows.${i}.toi" placeholder="mm:ss"></label>
             <button class="btn small" data-action="full-game" data-side="${side}" data-row="${i}" ${L ? '' : 'disabled'}>Full game</button>
@@ -601,7 +630,7 @@ function penCells(g, side, pe) {
 /* ---------- live previews ---------- */
 function updatePreviews() {
   const g = game(); if (!g) return;
-  for (const [form, el] of [['goal', '#goalPreview'], ['pen', '#penPreview']]) {
+  for (const [form, el] of [['ev', '#evPreview']]) {
     const box = $(el); const d = drafts[form]; if (!box || !d) continue;
     if (!d.clock) { box.textContent = ''; box.className = 'preview'; continue; }
     const err = clockError(g, d.period, d.clock);
@@ -622,17 +651,14 @@ document.addEventListener('click', e => {
   if (t.dataset.set) {
     const [form, key] = t.dataset.set.split('.');
     drafts[form][key] = t.dataset.val;
-    if (key === 'team') { // players belong to a team
-      if (form === 'goal') Object.assign(drafts.goal, { scorer: '', a1: '', a2: '' });
-      else drafts.pen.playerId = '';
-    }
+    if (key === 'team') Object.assign(drafts[form], { scorer: '', a1: '', a2: '', playerId: '' }); // players belong to a team
     render(); return;
   }
   const a = t.dataset.action, g = game(), id = t.dataset.id, side = t.dataset.side;
   if (t.tagName === 'INPUT' && t.type === 'file') return;
   switch (a) {
-    case 'new-game': newGame(); drafts.goal = drafts.pen = null; tab = 'pre'; break;
-    case 'open-game': state.currentId = id; drafts.goal = drafts.pen = drafts.editingGoal = drafts.editingPen = null; save(); tab = 'goals'; break;
+    case 'new-game': newGame(); drafts.goal = drafts.pen = drafts.ev = drafts.editing = null; tab = 'pre'; break;
+    case 'open-game': state.currentId = id; drafts.goal = drafts.pen = drafts.editingGoal = drafts.editingPen = drafts.ev = drafts.editing = null; save(); tab = 'game'; break;
     case 'delete-game':
       if (!confirmInline(t, 'Delete game?')) return;
       delete state.games[id]; if (state.currentId === id) state.currentId = null; save(); break;
@@ -642,14 +668,16 @@ document.addEventListener('click', e => {
       if (isReferenced(g, side, id) && !confirmInline(t, 'In use — remove?')) return;
       g[side].players = g[side].players.filter(p => p.id !== id); save(); break;
     case 'clear-roster': if (!confirmInline(t, 'Clear all?')) return; g[side].players = []; save(); break;
-    case 'save-goal': if (!saveGoal(g)) return; break;
-    case 'cancel-goal': drafts.goal = null; drafts.editingGoal = null; break;
-    case 'edit-goal': { const x = g.goals.find(x => x.id === id); drafts.goal = { ...x }; drafts.editingGoal = id; window.scrollTo(0, 0); break; }
-    case 'del-goal': if (!confirmInline(t, 'Delete?')) return; g.goals = g.goals.filter(x => x.id !== id); if (drafts.editingGoal === id) { drafts.goal = null; drafts.editingGoal = null; } save(); break;
-    case 'save-pen': if (!savePen(g)) return; break;
-    case 'cancel-pen': drafts.pen = null; drafts.editingPen = null; break;
-    case 'edit-pen': { const x = g.penalties.find(x => x.id === id); drafts.pen = { startOverride: '', endOverride: '', ...x }; drafts.editingPen = id; window.scrollTo(0, 0); break; }
-    case 'del-pen': if (!confirmInline(t, 'Delete?')) return; g.penalties = g.penalties.filter(x => x.id !== id); if (drafts.editingPen === id) { drafts.pen = null; drafts.editingPen = null; } save(); break;
+    case 'save-event': if (!saveEvent(g)) return; break;
+    case 'cancel-event': drafts.ev = blankEvent(drafts.ev?.period); drafts.editing = null; break;
+    case 'edit-goal': { const x = g.goals.find(x => x.id === id);
+      drafts.ev = { ...blankEvent(x.period), clock: x.clock, team: x.team, kind: 'goal', scorer: x.scorer, a1: x.a1, a2: x.a2, gtype: x.type };
+      drafts.editing = { kind: 'goal', id }; window.scrollTo(0, 0); break; }
+    case 'edit-pen': { const x = g.penalties.find(x => x.id === id);
+      drafts.ev = { ...blankEvent(x.period), clock: x.clock, team: x.team, kind: 'pen', playerId: x.playerId, ptype: x.type, offence: x.offence, startOverride: x.startOverride || '', endOverride: x.endOverride || '' };
+      drafts.editing = { kind: 'pen', id }; window.scrollTo(0, 0); break; }
+    case 'del-goal': if (!confirmInline(t, 'Delete?')) return; g.goals = g.goals.filter(x => x.id !== id); if (drafts.editing?.id === id) { drafts.ev = null; drafts.editing = null; } save(); break;
+    case 'del-pen': if (!confirmInline(t, 'Delete?')) return; g.penalties = g.penalties.filter(x => x.id !== id); if (drafts.editing?.id === id) { drafts.ev = null; drafts.editing = null; } save(); break;
     case 'toggle-pp': { const x = g.penalties.find(x => x.id === id); x.noPP = !x.noPP; save(); break; }
     case 'full-game': {
       const L = periodLen(g), otPlayed = g.goals.some(x => x.period === 'OT') || g.penalties.some(x => x.period === 'OT');
